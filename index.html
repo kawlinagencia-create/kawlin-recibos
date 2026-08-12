@@ -996,6 +996,10 @@ const PACOTES_PADRAO = [
   {nome:'PRO',  valor:3089, comissao_percentual:0.6, num_contas:3, descricao_padrao:'Gestão e administração de 3 contas gerenciadas'},
   {nome:'MAX',  valor:3689, comissao_percentual:0.5, num_contas:4, descricao_padrao:'Gestão e administração de 4 contas gerenciadas'},
 ];
+const MARCADOR_AUTO_RETROATIVO = 'Gerado automaticamente como mês retroativo no cadastro do cliente — edite para informar o faturamento real do período.';
+function precisaPreencherFaturamento(r){
+  return r.observacoes === MARCADOR_AUTO_RETROATIVO && !Number(r.volume_vendas||0) && r.status === 'pendente';
+}
 
 let supa = null;
 let clientes = [];
@@ -1443,15 +1447,17 @@ function renderMensalidadesCliente(){
   lista.forEach(r=>{
     const st = statusEfetivo(r);
     const temComprovante = !!r.comprovante_base64;
+    const precisaPreencher = precisaPreencherFaturamento(r);
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${r.mes_referencia}</td>
       <td>${fmtDataBR(r.vencimento)}</td>
-      <td class="num">${fmtBRL(r.total)}</td>
+      <td class="num">${fmtBRL(r.total)}${precisaPreencher ? ' <span class="hint" style="color:var(--warn);">(sem faturamento)</span>' : ''}</td>
       <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
       <td>${temComprovante ? '<span class="row-link" data-act="ver-comp">ver comprovante</span>' : '<span class="hint">sem comprovante</span>'}</td>
       <td>
         <div class="row-actions">
+          ${precisaPreencher ? '<span class="row-link" data-act="preencher" style="color:var(--terracotta-dark);font-weight:700;">preencher faturamento</span>' : ''}
           ${st!=='pago' ? '<span class="row-link" data-act="pago">marcar pago</span>' : ''}
           <span class="row-link" data-act="abrir">abrir recibo</span>
         </div>
@@ -1459,6 +1465,10 @@ function renderMensalidadesCliente(){
     `;
     if(temComprovante){
       tr.querySelector('[data-act="ver-comp"]').onclick = (e)=>{ e.stopPropagation(); abrirAnexoEmNovaAba(r.comprovante_base64); };
+    }
+    const btnPreencher = tr.querySelector('[data-act="preencher"]');
+    if(btnPreencher){
+      btnPreencher.onclick = ()=>{ closeModal('modal-mensalidades'); editarRecibo(r); };
     }
     const btnPago = tr.querySelector('[data-act="pago"]');
     if(btnPago){
@@ -1568,15 +1578,17 @@ function renderMensalidadesGeral(){
     recibosCliente.forEach(r=>{
       const st = statusEfetivo(r);
       const temComprovante = !!r.comprovante_base64;
+      const precisaPreencher = precisaPreencherFaturamento(r);
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${r.mes_referencia}</td>
         <td>${fmtDataBR(r.vencimento)}</td>
-        <td class="num">${fmtBRL(r.total)}</td>
+        <td class="num">${fmtBRL(r.total)}${precisaPreencher ? ' <span class="hint" style="color:var(--warn);">(sem faturamento)</span>' : ''}</td>
         <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
         <td>${temComprovante ? '<span class="row-link" data-act="ver-comp">ver comprovante</span>' : '<span class="hint">sem comprovante</span>'}</td>
         <td>
           <div class="row-actions">
+            ${precisaPreencher ? '<span class="row-link" data-act="preencher" style="color:var(--terracotta-dark);font-weight:700;">preencher faturamento</span>' : ''}
             ${st!=='pago' ? '<span class="row-link" data-act="pago">marcar pago</span>' : ''}
             <span class="row-link" data-act="abrir">abrir recibo</span>
           </div>
@@ -1584,6 +1596,10 @@ function renderMensalidadesGeral(){
       `;
       if(temComprovante){
         tr.querySelector('[data-act="ver-comp"]').onclick = ()=>abrirAnexoEmNovaAba(r.comprovante_base64);
+      }
+      const btnPreencher = tr.querySelector('[data-act="preencher"]');
+      if(btnPreencher){
+        btnPreencher.onclick = ()=>editarRecibo(r);
       }
       const btnPago = tr.querySelector('[data-act="pago"]');
       if(btnPago){
@@ -1911,7 +1927,6 @@ function nomeMesPt(data){
 
 async function gerarMensalidadesRetroativas(c){
   if(!c.data_inicio_contrato) return;
-  const MARCADOR_AUTO = 'Gerado automaticamente como mês retroativo no cadastro do cliente — edite para informar o faturamento real do período.';
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
   const hoje = new Date();
   const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
@@ -1938,7 +1953,7 @@ async function gerarMensalidadesRetroativas(c){
     if(existente){
       // só corrige mensalidades que ainda são placeholders automáticos intocados —
       // nunca sobrescreve um recibo que já foi editado com faturamento real, comprovante ou status pago.
-      const éPlaceholderIntocado = existente.observacoes === MARCADOR_AUTO
+      const éPlaceholderIntocado = existente.observacoes === MARCADOR_AUTO_RETROATIVO
         && existente.status === 'pendente'
         && !Number(existente.volume_vendas||0)
         && !existente.comprovante_base64;
@@ -1967,7 +1982,7 @@ async function gerarMensalidadesRetroativas(c){
       valor_comissao: 0,
       total: valorPacoteMes,
       status: 'pendente',
-      observacoes: MARCADOR_AUTO,
+      observacoes: MARCADOR_AUTO_RETROATIVO,
     });
     k++;
   }
