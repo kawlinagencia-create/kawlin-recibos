@@ -467,10 +467,21 @@
 
           <h3 class="section-title">Desconto inicial (opcional)</h3>
           <div class="field hint" style="margin-top:-6px;margin-bottom:12px;">Para clientes com desconto combinado nos primeiros meses de contrato. O sistema aplica sozinho no recibo enquanto durar o prazo, contando a partir do início do contrato acima.</div>
+          <div class="field">
+            <label>Tipo de desconto</label>
+            <select id="cliente-desconto-tipo" onchange="alternarTipoDescontoCliente()">
+              <option value="percentual">Percentual (%)</option>
+              <option value="fixo">Valor fixo (R$)</option>
+            </select>
+          </div>
           <div class="field-row">
-            <div class="field">
+            <div class="field" id="cliente-desconto-pct-wrap">
               <label>Percentual de desconto (%)</label>
               <input id="cliente-desconto-pct" type="number" step="0.01" placeholder="Ex: 20">
+            </div>
+            <div class="field" id="cliente-desconto-fixo-wrap" style="display:none;">
+              <label>Valor fixo de desconto (R$)</label>
+              <input id="cliente-desconto-fixo" type="text" inputmode="decimal" placeholder="R$ 0,00" oninput="maskMoeda(this)">
             </div>
             <div class="field">
               <label>Duração do desconto (meses)</label>
@@ -872,7 +883,9 @@
      email text,
      valor_pacote numeric default 0,
      comissao_percentual numeric default 0,
+     desconto_tipo text default 'percentual',
      desconto_percentual numeric default 0,
+     desconto_valor_fixo numeric default 0,
      desconto_meses int default 0,
      desconto_acordo text,
      contas jsonb default '[]',
@@ -960,7 +973,9 @@
    -- alter table clientes add column if not exists pacote_id uuid references pacotes(id);
    -- alter table clientes add column if not exists pacote_nome text;
    -- alter table clientes add column if not exists pacote_descricao text;
+   -- alter table clientes add column if not exists desconto_tipo text default 'percentual';
    -- alter table clientes add column if not exists desconto_percentual numeric default 0;
+   -- alter table clientes add column if not exists desconto_valor_fixo numeric default 0;
    -- alter table clientes add column if not exists desconto_meses int default 0;
    -- alter table clientes add column if not exists desconto_acordo text;
    -- alter table clientes rename column contato to email; -- se existir a coluna antiga
@@ -1046,14 +1061,31 @@ function statusLabel(s){ return {pago:'Pago', pendente:'Pendente', atrasado:'Atr
 function statusClienteLabel(s){ return {ativo:'Ativo', pausado:'Pausado', encerrado:'Encerrado'}[s] || s; }
 
 function descontoInfo(c, dataRefISO){
-  if(!c || !c.desconto_percentual || !c.desconto_meses || !c.data_inicio_contrato) return null;
+  if(!c || !c.data_inicio_contrato || !c.desconto_meses) return null;
+  const tipo = c.desconto_tipo || 'percentual';
+  const temConfig = tipo === 'fixo' ? Number(c.desconto_valor_fixo||0) > 0 : Number(c.desconto_percentual||0) > 0;
+  if(!temConfig) return null;
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
   const ref = new Date((dataRefISO || hojeISO()) + 'T00:00:00');
   const mesesDecorridos = (ref.getFullYear()-inicio.getFullYear())*12 + (ref.getMonth()-inicio.getMonth());
   // o primeiro pagamento só vence 1 mês após o início do contrato, então o mês do
   // 1º pagamento já corresponde a mesesDecorridos=1 — a janela do desconto vai de 1 até desconto_meses (inclusive)
   if(mesesDecorridos < 1 || mesesDecorridos > c.desconto_meses) return null;
-  return { percentual: c.desconto_percentual, mesAtual: mesesDecorridos, totalMeses: c.desconto_meses, acordo: c.desconto_acordo||'' };
+  return {
+    tipo,
+    percentual: c.desconto_percentual,
+    valorFixo: Number(c.desconto_valor_fixo||0),
+    mesAtual: mesesDecorridos,
+    totalMeses: c.desconto_meses,
+    acordo: c.desconto_acordo||'',
+  };
+}
+function valorComDesconto(valorBase, desc){
+  if(!desc) return valorBase;
+  return desc.tipo === 'fixo' ? Math.max(0, valorBase - desc.valorFixo) : valorBase * (1 - desc.percentual/100);
+}
+function descricaoDesconto(desc){
+  return desc.tipo === 'fixo' ? fmtBRL(desc.valorFixo) : `${desc.percentual}%`;
 }
 
 /* ---------------- Navegação ---------------- */
@@ -1407,7 +1439,7 @@ function renderClientes(){
       <div class="meta">${contas || 'Sem contas cadastradas'}</div>
       <div class="meta">${c.pacote_nome ? `Pacote: <b>${c.pacote_nome}</b> · ` : 'Pacote: '}${fmtBRL(c.valor_pacote)} · Comissão: <b>${c.comissao_percentual||0}%</b></div>
       ${baselineTotal>0 ? `<div class="meta">Faturamento inicial (baseline): <b>${fmtBRL(baselineTotal)}</b></div>` : ''}
-      ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${desc.percentual}% · mês ${desc.mesAtual}/${desc.totalMeses}</span></div>` : ''}
+      ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${descricaoDesconto(desc)} · mês ${desc.mesAtual}/${desc.totalMeses}</span></div>` : ''}
       ${c.responsavel_agencia ? `<div class="meta">Responsável: ${c.responsavel_agencia}</div>` : ''}
       <div class="card-tags-row">
         <span class="tag">editar ficha</span>
@@ -1763,6 +1795,12 @@ function limparFormPacote(){
   document.getElementById('btn-excluir-pacote').style.display = 'none';
   document.getElementById('btn-cancelar-edicao-pacote').style.display = 'none';
 }
+function alternarTipoDescontoCliente(){
+  const tipo = document.getElementById('cliente-desconto-tipo').value;
+  document.getElementById('cliente-desconto-pct-wrap').style.display = tipo === 'percentual' ? 'block' : 'none';
+  document.getElementById('cliente-desconto-fixo-wrap').style.display = tipo === 'fixo' ? 'block' : 'none';
+}
+
 function abrirModalPacotes(){
   limparFormPacote();
   renderPacotesLista();
@@ -1850,9 +1888,12 @@ function abrirModalCliente(c){
   popularSelectPacotes(c ? (c.pacote_id||'') : '');
   setMoeda(document.getElementById('cliente-pacote'), c ? c.valor_pacote : 0);
   document.getElementById('cliente-comissao').value = c ? c.comissao_percentual : '';
+  document.getElementById('cliente-desconto-tipo').value = c ? (c.desconto_tipo||'percentual') : 'percentual';
   document.getElementById('cliente-desconto-pct').value = c ? (c.desconto_percentual||'') : '';
+  setMoeda(document.getElementById('cliente-desconto-fixo'), c ? (c.desconto_valor_fixo||0) : 0);
   document.getElementById('cliente-desconto-meses').value = c ? (c.desconto_meses||'') : '';
   document.getElementById('cliente-desconto-acordo').value = c ? (c.desconto_acordo||'') : '';
+  alternarTipoDescontoCliente();
   document.getElementById('cliente-obs').value = c ? (c.observacoes||'') : '';
   contasEstadoAtual = c && Array.isArray(c.contas) ? JSON.parse(JSON.stringify(c.contas)) : [];
   renderContasContainer();
@@ -1883,7 +1924,9 @@ async function salvarCliente(){
     pacote_descricao: pacoteSelecionado ? pacoteSelecionado.descricao_padrao : null,
     valor_pacote: parseMoeda(document.getElementById('cliente-pacote')),
     comissao_percentual: parseFloat(document.getElementById('cliente-comissao').value) || 0,
+    desconto_tipo: document.getElementById('cliente-desconto-tipo').value,
     desconto_percentual: parseFloat(document.getElementById('cliente-desconto-pct').value) || 0,
+    desconto_valor_fixo: parseMoeda(document.getElementById('cliente-desconto-fixo')),
     desconto_meses: parseInt(document.getElementById('cliente-desconto-meses').value) || 0,
     desconto_acordo: document.getElementById('cliente-desconto-acordo').value.trim(),
     contas: contasEstadoAtual,
@@ -1934,8 +1977,11 @@ async function gerarMensalidadesRetroativas(c){
   const descContas = contasAtivas.length ? contasAtivas.map(x=>`${x.marketplace}${x.nome_loja? ' - '+x.nome_loja:''}`).join(', ') : null;
   const pacoteDesc = c.pacote_descricao || (descContas ? `Gestão e administração de ${descContas}` : 'Gestão e administração das contas no período');
   const recibosCliente = recibos.filter(r=>r.cliente_id === c.id);
-  const porVencimento = {};
-  recibosCliente.forEach(r=>{ if(r.vencimento) porVencimento[r.vencimento] = r; });
+  const porMesAno = {};
+  recibosCliente.forEach(r=>{
+    const chave = (r.vencimento || r.periodo_fim || '').slice(0,7); // "YYYY-MM"
+    if(chave && !porMesAno[chave]) porMesAno[chave] = r;
+  });
 
   const novosPayloads = [];
   const atualizacoes = [];
@@ -1944,11 +1990,12 @@ async function gerarMensalidadesRetroativas(c){
     const venc = addMeses(inicio, k);
     if(venc > hoje) break;
     const vencISO = venc.toISOString().slice(0,10);
+    const chaveMesAno = vencISO.slice(0,7);
     const periodoInicio = addMeses(inicio, k-1);
     const periodoFim = venc;
     const desc = descontoInfo(c, vencISO);
-    const valorPacoteMes = desc ? Number(c.valor_pacote||0) * (1 - desc.percentual/100) : Number(c.valor_pacote||0);
-    const existente = porVencimento[vencISO];
+    const valorPacoteMes = desc ? valorComDesconto(Number(c.valor_pacote||0), desc) : Number(c.valor_pacote||0);
+    const existente = porMesAno[chaveMesAno];
 
     if(existente){
       // só corrige mensalidades que ainda são placeholders automáticos intocados —
@@ -1957,8 +2004,19 @@ async function gerarMensalidadesRetroativas(c){
         && existente.status === 'pendente'
         && !Number(existente.volume_vendas||0)
         && !existente.comprovante_base64;
-      if(éPlaceholderIntocado && Number(existente.valor_pacote||0).toFixed(2) !== valorPacoteMes.toFixed(2)){
-        atualizacoes.push({id: existente.id, valor_pacote: valorPacoteMes, total: valorPacoteMes});
+      const mudouValor = Number(existente.valor_pacote||0).toFixed(2) !== valorPacoteMes.toFixed(2);
+      const mudouData = existente.vencimento !== vencISO;
+      if(éPlaceholderIntocado && (mudouValor || mudouData)){
+        atualizacoes.push({
+          id: existente.id,
+          valor_pacote: valorPacoteMes,
+          total: valorPacoteMes,
+          vencimento: vencISO,
+          emissao: vencISO,
+          periodo_inicio: periodoInicio.toISOString().slice(0,10),
+          periodo_fim: periodoFim.toISOString().slice(0,10),
+          mes_referencia: nomeMesPt(periodoFim),
+        });
       }
       k++;
       continue;
@@ -1994,7 +2052,8 @@ async function gerarMensalidadesRetroativas(c){
     mudou = true;
   }
   for(const upd of atualizacoes){
-    const {error} = await supa.from('recibos').update({valor_pacote: upd.valor_pacote, total: upd.total}).eq('id', upd.id);
+    const {id, ...campos} = upd;
+    const {error} = await supa.from('recibos').update(campos).eq('id', id);
     if(error){ console.error(error); continue; }
     mudou = true;
   }
@@ -2064,10 +2123,10 @@ function aplicarDescontoInicialNoRecibo(){
   const desc = descontoInfo(c, dataRef);
   const valorBase = Number(c.valor_pacote||0);
   if(desc){
-    const valorComDesconto = valorBase * (1 - desc.percentual/100);
-    setMoeda(document.getElementById('recibo-pacote'), valorComDesconto);
+    const valorFinal = valorComDesconto(valorBase, desc);
+    setMoeda(document.getElementById('recibo-pacote'), valorFinal);
     hint.style.display = 'block';
-    hint.innerHTML = `<b>Desconto inicial aplicado:</b> ${desc.percentual}% (mês ${desc.mesAtual} de ${desc.totalMeses}) — pacote de ${fmtBRL(valorBase)} reduzido para ${fmtBRL(valorComDesconto)}.${desc.acordo? ' Acordo: '+desc.acordo : ''}`;
+    hint.innerHTML = `<b>Desconto inicial aplicado:</b> ${descricaoDesconto(desc)} (mês ${desc.mesAtual} de ${desc.totalMeses}) — pacote de ${fmtBRL(valorBase)} reduzido para ${fmtBRL(valorFinal)}.${desc.acordo? ' Acordo: '+desc.acordo : ''}`;
   }else{
     setMoeda(document.getElementById('recibo-pacote'), valorBase);
     hint.style.display = 'none';
