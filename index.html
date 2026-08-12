@@ -130,6 +130,9 @@
   .anexo-view-link{font-size:12.5px;color:var(--terracotta-dark);font-weight:600;cursor:pointer;}
   .anexo-view-link:hover{text-decoration:underline;}
 
+  #recibo-desconto-hint{background:var(--warn-bg);color:var(--warn);border-radius:9px;padding:11px 14px;font-size:12.5px;line-height:1.6;margin:-6px 0 16px;}
+  #recibo-desconto-hint b{font-weight:700;}
+
   .table-wrap{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
   .table-toolbar{display:flex;gap:10px;flex-wrap:wrap;padding:16px 18px;border-bottom:1px solid var(--line);align-items:center;}
   .table-toolbar input, .table-toolbar select{padding:9px 12px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;font-family:'Inter',sans-serif;}
@@ -416,6 +419,23 @@
           </div>
           <div class="field hint" style="margin-top:-10px;">O pacote escolhido preenche os valores acima automaticamente — você ainda pode ajustar para este cliente específico, sem alterar o pacote padrão.</div>
 
+          <h3 class="section-title">Desconto inicial (opcional)</h3>
+          <div class="field hint" style="margin-top:-6px;margin-bottom:12px;">Para clientes com desconto combinado nos primeiros meses de contrato. O sistema aplica sozinho no recibo enquanto durar o prazo, contando a partir do início do contrato acima.</div>
+          <div class="field-row">
+            <div class="field">
+              <label>Percentual de desconto (%)</label>
+              <input id="cliente-desconto-pct" type="number" step="0.01" placeholder="Ex: 20">
+            </div>
+            <div class="field">
+              <label>Duração do desconto (meses)</label>
+              <input id="cliente-desconto-meses" type="number" min="1" step="1" placeholder="Ex: 2">
+            </div>
+          </div>
+          <div class="field">
+            <label>Acordo combinado</label>
+            <textarea id="cliente-desconto-acordo" placeholder="Ex: 20% de desconto no pacote nos 2 primeiros meses, combinado na reunião de fechamento em .../.../..."></textarea>
+          </div>
+
           <h3 class="section-title">Contas / marketplaces geridos</h3>
           <div class="field hint" style="margin-top:-6px;margin-bottom:12px;">Para cada conta, registre o print e o faturamento do momento em que assumimos a gestão — a comissão é calculada sobre o crescimento a partir desse valor, não sobre o total faturado.</div>
           <div id="contas-container"></div>
@@ -531,6 +551,7 @@
           <input id="recibo-pacote-desc" placeholder="Gestão e administração de 2 contas no período">
         </div>
       </div>
+      <div id="recibo-desconto-hint" style="display:none;"></div>
       <div class="field-row">
         <div class="field">
           <label>Comissão (%)</label>
@@ -780,6 +801,9 @@
      email text,
      valor_pacote numeric default 0,
      comissao_percentual numeric default 0,
+     desconto_percentual numeric default 0,
+     desconto_meses int default 0,
+     desconto_acordo text,
      contas jsonb default '[]',
      observacoes text,
      criado_em timestamp with time zone default now()
@@ -865,6 +889,9 @@
    -- alter table clientes add column if not exists pacote_id uuid references pacotes(id);
    -- alter table clientes add column if not exists pacote_nome text;
    -- alter table clientes add column if not exists pacote_descricao text;
+   -- alter table clientes add column if not exists desconto_percentual numeric default 0;
+   -- alter table clientes add column if not exists desconto_meses int default 0;
+   -- alter table clientes add column if not exists desconto_acordo text;
    -- alter table clientes rename column contato to email; -- se existir a coluna antiga
    -- alter table recibos add column if not exists vencimento date;
    -- alter table recibos add column if not exists status text default 'pendente';
@@ -942,6 +969,15 @@ function statusEfetivo(r){
 }
 function statusLabel(s){ return {pago:'Pago', pendente:'Pendente', atrasado:'Atrasado'}[s] || s; }
 function statusClienteLabel(s){ return {ativo:'Ativo', pausado:'Pausado', encerrado:'Encerrado'}[s] || s; }
+
+function descontoInfo(c, dataRefISO){
+  if(!c || !c.desconto_percentual || !c.desconto_meses || !c.data_inicio_contrato) return null;
+  const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
+  const ref = new Date((dataRefISO || hojeISO()) + 'T00:00:00');
+  const mesesDecorridos = (ref.getFullYear()-inicio.getFullYear())*12 + (ref.getMonth()-inicio.getMonth());
+  if(mesesDecorridos < 0 || mesesDecorridos >= c.desconto_meses) return null;
+  return { percentual: c.desconto_percentual, mesAtual: mesesDecorridos+1, totalMeses: c.desconto_meses, acordo: c.desconto_acordo||'' };
+}
 
 /* ---------------- Navegação ---------------- */
 document.querySelectorAll('nav.tabs button').forEach(btn=>{
@@ -1233,6 +1269,7 @@ function renderClientes(){
     const contasAtivasCard = (c.contas||[]).filter(x=>x.ativa!==false);
     const contas = contasAtivasCard.map(x=>x.marketplace).join(', ');
     const baselineTotal = contasAtivasCard.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
+    const desc = descontoInfo(c);
     const card = document.createElement('div');
     card.className = 'card';
     card.onclick = ()=>abrirModalCliente(c);
@@ -1244,6 +1281,7 @@ function renderClientes(){
       <div class="meta">${contas || 'Sem contas cadastradas'}</div>
       <div class="meta">${c.pacote_nome ? `Pacote: <b>${c.pacote_nome}</b> · ` : 'Pacote: '}${fmtBRL(c.valor_pacote)} · Comissão: <b>${c.comissao_percentual||0}%</b></div>
       ${baselineTotal>0 ? `<div class="meta">Faturamento inicial (baseline): <b>${fmtBRL(baselineTotal)}</b></div>` : ''}
+      ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${desc.percentual}% · mês ${desc.mesAtual}/${desc.totalMeses}</span></div>` : ''}
       ${c.responsavel_agencia ? `<div class="meta">Responsável: ${c.responsavel_agencia}</div>` : ''}
       <span class="tag">editar ficha</span>
     `;
@@ -1492,6 +1530,9 @@ function abrirModalCliente(c){
   popularSelectPacotes(c ? (c.pacote_id||'') : '');
   setMoeda(document.getElementById('cliente-pacote'), c ? c.valor_pacote : 0);
   document.getElementById('cliente-comissao').value = c ? c.comissao_percentual : '';
+  document.getElementById('cliente-desconto-pct').value = c ? (c.desconto_percentual||'') : '';
+  document.getElementById('cliente-desconto-meses').value = c ? (c.desconto_meses||'') : '';
+  document.getElementById('cliente-desconto-acordo').value = c ? (c.desconto_acordo||'') : '';
   document.getElementById('cliente-obs').value = c ? (c.observacoes||'') : '';
   contasEstadoAtual = c && Array.isArray(c.contas) ? JSON.parse(JSON.stringify(c.contas)) : [];
   renderContasContainer();
@@ -1522,6 +1563,9 @@ async function salvarCliente(){
     pacote_descricao: pacoteSelecionado ? pacoteSelecionado.descricao_padrao : null,
     valor_pacote: parseMoeda(document.getElementById('cliente-pacote')),
     comissao_percentual: parseFloat(document.getElementById('cliente-comissao').value) || 0,
+    desconto_percentual: parseFloat(document.getElementById('cliente-desconto-pct').value) || 0,
+    desconto_meses: parseInt(document.getElementById('cliente-desconto-meses').value) || 0,
+    desconto_acordo: document.getElementById('cliente-desconto-acordo').value.trim(),
     contas: contasEstadoAtual,
     observacoes: document.getElementById('cliente-obs').value.trim(),
   };
@@ -1564,7 +1608,6 @@ function popularSelectClientes(selecionarId){
   sel.onchange = ()=>{
     const c = clientes.find(x=>x.id === sel.value);
     if(c){
-      setMoeda(document.getElementById('recibo-pacote'), c.valor_pacote || 0);
       const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
       const descContas = contasAtivas.length ? contasAtivas.map(x=>`${x.marketplace}${x.nome_loja? ' - '+x.nome_loja:''}`).join(', ') : null;
       document.getElementById('recibo-pacote-desc').value = c.pacote_descricao || (descContas ? `Gestão e administração de ${descContas}` : 'Gestão e administração das contas no período');
@@ -1577,11 +1620,33 @@ function popularSelectClientes(selecionarId){
         const venc = new Date(base.getFullYear(), base.getMonth() + (base.getDate() > c.dia_vencimento ? 1:0), c.dia_vencimento);
         document.getElementById('recibo-vencimento').value = venc.toISOString().slice(0,10);
       }
+      aplicarDescontoInicialNoRecibo();
       recalcularComissao();
     }
   };
+  document.getElementById('recibo-periodo-fim').onchange = aplicarDescontoInicialNoRecibo;
   const hoje = hojeISO();
   if(!document.getElementById('recibo-emissao').value) document.getElementById('recibo-emissao').value = hoje;
+}
+
+function aplicarDescontoInicialNoRecibo(){
+  const sel = document.getElementById('recibo-cliente');
+  const c = clientes.find(x=>x.id === sel.value);
+  const hint = document.getElementById('recibo-desconto-hint');
+  if(!c){ hint.style.display='none'; return; }
+  const dataRef = document.getElementById('recibo-periodo-fim').value || hojeISO();
+  const desc = descontoInfo(c, dataRef);
+  const valorBase = Number(c.valor_pacote||0);
+  if(desc){
+    const valorComDesconto = valorBase * (1 - desc.percentual/100);
+    setMoeda(document.getElementById('recibo-pacote'), valorComDesconto);
+    hint.style.display = 'block';
+    hint.innerHTML = `<b>Desconto inicial aplicado:</b> ${desc.percentual}% (mês ${desc.mesAtual} de ${desc.totalMeses}) — pacote de ${fmtBRL(valorBase)} reduzido para ${fmtBRL(valorComDesconto)}.${desc.acordo? ' Acordo: '+desc.acordo : ''}`;
+  }else{
+    setMoeda(document.getElementById('recibo-pacote'), valorBase);
+    hint.style.display = 'none';
+  }
+  recalcularComissao();
 }
 
 function renderContasDetalheForm(){
@@ -1647,6 +1712,7 @@ function cancelarEdicaoRecibo(){
   ['recibo-mes','recibo-periodo-inicio','recibo-periodo-fim','recibo-volume','recibo-baseline','recibo-obs'].forEach(id=>document.getElementById(id).value='');
   contasDetalheAtual = [];
   renderContasDetalheForm();
+  document.getElementById('recibo-desconto-hint').style.display = 'none';
   popularSelectClientes();
   recalcularComissao();
 }
