@@ -122,6 +122,14 @@
   .add-conta-btn{background:none;border:1px dashed var(--line);border-radius:8px;padding:8px 14px;font-size:13px;color:var(--ink-soft);cursor:pointer;font-weight:600;}
   .add-conta-btn:hover{border-color:var(--terracotta);color:var(--terracotta-dark);}
 
+  /* ---- Anexo de comprovante (despesas e recibos) ---- */
+  .anexo-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .anexo-thumb{width:44px;height:44px;object-fit:cover;border-radius:7px;border:1px solid var(--line);}
+  .anexo-pdf-badge{width:44px;height:44px;border-radius:7px;border:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--terracotta-dark);}
+  .anexo-nome{font-size:12.5px;color:var(--ink-soft);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .anexo-view-link{font-size:12.5px;color:var(--terracotta-dark);font-weight:600;cursor:pointer;}
+  .anexo-view-link:hover{text-decoration:underline;}
+
   .table-wrap{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
   .table-toolbar{display:flex;gap:10px;flex-wrap:wrap;padding:16px 18px;border-bottom:1px solid var(--line);align-items:center;}
   .table-toolbar input, .table-toolbar select{padding:9px 12px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;font-family:'Inter',sans-serif;}
@@ -713,6 +721,10 @@
           <label><input type="checkbox" id="despesa-recorrente" style="width:auto;margin-right:6px;"> Despesa recorrente (se repete todo mês)</label>
         </div>
         <div class="field">
+          <label>Comprovante de pagamento (opcional)</label>
+          <div id="despesa-comprovante-wrap"></div>
+        </div>
+        <div class="field">
           <label>Observações (opcional)</label>
           <textarea id="despesa-obs"></textarea>
         </div>
@@ -735,6 +747,10 @@
     <div class="modal-body">
       <div id="receipt-render-area"></div>
       <div class="receipt-actions" id="receipt-actions"></div>
+      <div class="panel-block" style="margin-top:18px;padding:16px 20px;">
+        <div class="panel-title" style="padding:0 0 10px;">Comprovante de pagamento do cliente</div>
+        <div id="recibo-comprovante-wrap"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -790,6 +806,9 @@
      status text default 'pendente',
      data_pagamento date,
      observacoes text,
+     comprovante_base64 text,
+     comprovante_nome text,
+     comprovante_tipo text,
      criado_em timestamp with time zone default now()
    );
 
@@ -804,6 +823,9 @@
      forma_pagamento text,
      recorrente boolean default false,
      observacoes text,
+     comprovante_base64 text,
+     comprovante_nome text,
+     comprovante_tipo text,
      criado_em timestamp with time zone default now()
    );
 
@@ -851,6 +873,12 @@
    -- alter table recibos add column if not exists baseline_usado numeric default 0;
    -- alter table recibos add column if not exists crescimento numeric default 0;
    -- alter table recibos add column if not exists contas_detalhe jsonb default '[]';
+   -- alter table recibos add column if not exists comprovante_base64 text;
+   -- alter table recibos add column if not exists comprovante_nome text;
+   -- alter table recibos add column if not exists comprovante_tipo text;
+   -- alter table despesas add column if not exists comprovante_base64 text;
+   -- alter table despesas add column if not exists comprovante_nome text;
+   -- alter table despesas add column if not exists comprovante_tipo text;
    -- Obs: os campos "valor_inicial" e "print_base64" de cada conta ficam dentro da
    -- coluna jsonb "contas" do cliente — não precisam de migração, já funcionam
    -- assim que o app for atualizado.
@@ -1291,6 +1319,52 @@ function onPrintSelecionado(idx, inputEl){
     }).catch(()=>showToast('Não foi possível processar a imagem'));
   };
   reader.readAsDataURL(file);
+}
+
+/* ---------------- Anexo de comprovante (imagem ou PDF) — despesas e recibos ---------------- */
+function lerArquivoComoAnexo(file){
+  return new Promise((resolve, reject)=>{
+    if(file.size > 8*1024*1024){ reject(new Error('Arquivo muito grande (máx. 8MB)')); return; }
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      if(file.type.startsWith('image/')){
+        redimensionarImagem(e.target.result, 1100, 0.75)
+          .then(dataUrl=>resolve({base64:dataUrl, nome:file.name, tipo:'image'}))
+          .catch(()=>resolve({base64:e.target.result, nome:file.name, tipo:'image'}));
+      }else{
+        resolve({base64:e.target.result, nome:file.name, tipo: file.type==='application/pdf' ? 'pdf' : 'outro'});
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+function abrirAnexoEmNovaAba(base64){
+  const w = window.open();
+  if(w){
+    w.document.write(`<title>Comprovante</title><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;">${
+      base64.startsWith('data:application/pdf') || base64.startsWith('data:image')
+        ? (base64.startsWith('data:application/pdf') ? `<embed src="${base64}" width="100%" height="100%" style="min-height:100vh;">` : `<img src="${base64}" style="max-width:100%;max-height:100vh;">`)
+        : ''
+    }</body>`);
+  }
+}
+function renderAnexoWrap(containerId, dado, onSelecionar, onRemover){
+  const wrap = document.getElementById(containerId);
+  if(!dado || !dado.base64){
+    wrap.innerHTML = `<label class="print-upload-btn">+ anexar comprovante<input type="file" accept="image/*,.pdf" style="display:none;" onchange="${onSelecionar}(this)"></label>`;
+    return;
+  }
+  const isPdf = dado.tipo === 'pdf';
+  wrap.innerHTML = `
+    <div class="anexo-row">
+      ${isPdf ? `<div class="anexo-pdf-badge">PDF</div>` : `<img class="anexo-thumb" src="${dado.base64}">`}
+      <span class="anexo-nome">${dado.nome || 'comprovante'}</span>
+      <span class="anexo-view-link" onclick='abrirAnexoEmNovaAba(${JSON.stringify(dado.base64)})'>ver</span>
+      <label class="print-upload-btn">trocar<input type="file" accept="image/*,.pdf" style="display:none;" onchange="${onSelecionar}(this)"></label>
+      <button type="button" class="print-remove" onclick="${onRemover}()">remover</button>
+    </div>
+  `;
 }
 
 function popularSelectPacotes(selecionarId){
@@ -1788,6 +1862,8 @@ function renderDespesas(){
   document.getElementById('despesas-total-filtrado').textContent = fmtBRL(total);
 }
 
+let despesaComprovanteAtual = null;
+
 function abrirModalDespesa(d){
   document.getElementById('despesa-modal-title').textContent = d ? 'Editar despesa' : 'Nova despesa';
   document.getElementById('despesa-id').value = d ? d.id : '';
@@ -1800,8 +1876,23 @@ function abrirModalDespesa(d){
   document.getElementById('despesa-forma-pagamento').value = d ? (d.forma_pagamento||'') : '';
   document.getElementById('despesa-recorrente').checked = d ? !!d.recorrente : false;
   document.getElementById('despesa-obs').value = d ? (d.observacoes||'') : '';
+  despesaComprovanteAtual = (d && d.comprovante_base64) ? {base64:d.comprovante_base64, nome:d.comprovante_nome, tipo:d.comprovante_tipo} : null;
+  renderAnexoWrap('despesa-comprovante-wrap', despesaComprovanteAtual, 'onDespesaComprovanteSelecionado', 'removerDespesaComprovante');
   document.getElementById('btn-excluir-despesa').style.display = d ? 'inline-flex' : 'none';
   openModal('modal-despesa');
+}
+
+function onDespesaComprovanteSelecionado(inputEl){
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  lerArquivoComoAnexo(file).then(dado=>{
+    despesaComprovanteAtual = dado;
+    renderAnexoWrap('despesa-comprovante-wrap', despesaComprovanteAtual, 'onDespesaComprovanteSelecionado', 'removerDespesaComprovante');
+  }).catch(err=>showToast(err.message || 'Não foi possível anexar o arquivo'));
+}
+function removerDespesaComprovante(){
+  despesaComprovanteAtual = null;
+  renderAnexoWrap('despesa-comprovante-wrap', null, 'onDespesaComprovanteSelecionado', 'removerDespesaComprovante');
 }
 
 async function alternarStatusDespesa(d){
@@ -1827,6 +1918,9 @@ async function salvarDespesa(){
     forma_pagamento: document.getElementById('despesa-forma-pagamento').value.trim(),
     recorrente: document.getElementById('despesa-recorrente').checked,
     observacoes: document.getElementById('despesa-obs').value.trim(),
+    comprovante_base64: despesaComprovanteAtual ? despesaComprovanteAtual.base64 : null,
+    comprovante_nome: despesaComprovanteAtual ? despesaComprovanteAtual.nome : null,
+    comprovante_tipo: despesaComprovanteAtual ? despesaComprovanteAtual.tipo : null,
   };
   if(!payload.descricao){ showToast('Informe a descrição da despesa'); return; }
 
@@ -1933,7 +2027,38 @@ function abrirRecibo(r){
   btnExcluir.onclick = ()=>excluirRecibo(r);
   actions.appendChild(btnExcluir);
 
+  window.currentReciboIdAberto = r.id;
+  const comprovanteAtual = r.comprovante_base64 ? {base64:r.comprovante_base64, nome:r.comprovante_nome, tipo:r.comprovante_tipo} : null;
+  renderAnexoWrap('recibo-comprovante-wrap', comprovanteAtual, 'onReciboComprovanteSelecionado', 'removerReciboComprovante');
+
   openModal('modal-recibo');
+}
+
+function onReciboComprovanteSelecionado(inputEl){
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  const reciboId = window.currentReciboIdAberto;
+  lerArquivoComoAnexo(file).then(async dado=>{
+    const {error} = await supa.from('recibos').update({
+      comprovante_base64: dado.base64, comprovante_nome: dado.nome, comprovante_tipo: dado.tipo,
+    }).eq('id', reciboId);
+    if(error){ showToast('Erro ao salvar comprovante'); console.error(error); return; }
+    showToast('Comprovante anexado');
+    await carregarRecibos();
+    renderAnexoWrap('recibo-comprovante-wrap', dado, 'onReciboComprovanteSelecionado', 'removerReciboComprovante');
+    renderHistorico();
+  }).catch(err=>showToast(err.message || 'Não foi possível anexar o arquivo'));
+}
+async function removerReciboComprovante(){
+  const reciboId = window.currentReciboIdAberto;
+  const {error} = await supa.from('recibos').update({
+    comprovante_base64: null, comprovante_nome: null, comprovante_tipo: null,
+  }).eq('id', reciboId);
+  if(error){ showToast('Erro ao remover comprovante'); console.error(error); return; }
+  showToast('Comprovante removido');
+  await carregarRecibos();
+  renderAnexoWrap('recibo-comprovante-wrap', null, 'onReciboComprovanteSelecionado', 'removerReciboComprovante');
+  renderHistorico();
 }
 
 async function baixarPDF(){
