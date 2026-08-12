@@ -137,6 +137,12 @@
   #recibo-desconto-hint{background:var(--warn-bg);color:var(--warn);border-radius:9px;padding:11px 14px;font-size:12.5px;line-height:1.6;margin:-6px 0 16px;}
   #recibo-desconto-hint b{font-weight:700;}
 
+  /* ---- Mensalidades (visão geral por cliente) ---- */
+  .mensalidades-grupo{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:16px;overflow:hidden;}
+  .mensalidades-grupo-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:var(--panel);}
+  .mensalidades-grupo-header .nome{font-family:'Satoshi',sans-serif;font-weight:700;font-size:15px;}
+  .mensalidades-grupo-header .contagem{font-size:12px;color:var(--ink-soft);}
+
   .table-wrap{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
   .table-toolbar{display:flex;gap:10px;flex-wrap:wrap;padding:16px 18px;border-bottom:1px solid var(--line);align-items:center;}
   .table-toolbar input, .table-toolbar select{padding:9px 12px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;font-family:'Inter',sans-serif;}
@@ -271,6 +277,7 @@
     <nav class="tabs">
       <button data-view="visao-geral" class="active">Visão Geral</button>
       <button data-view="clientes">Clientes</button>
+      <button data-view="mensalidades">Mensalidades</button>
       <button data-view="novo-recibo">Novo Recibo</button>
       <button data-view="historico">Histórico</button>
       <button data-view="despesas">Despesas</button>
@@ -284,6 +291,11 @@
   <section class="view active" id="view-visao-geral">
     <h1 class="page-title">Visão geral</h1>
     <p class="page-desc">Panorama financeiro e de cobrança de todos os clientes.</p>
+
+    <h3 class="section-title" style="margin-top:0;border-top:none;padding-top:0;">Panorama geral (todo o histórico)</h3>
+    <div class="stat-grid" id="dashboard-geral-stats" style="margin-bottom:26px;"></div>
+
+    <h3 class="section-title">Este mês</h3>
     <div class="stat-grid" id="stats-grid"></div>
 
     <div class="panel-block">
@@ -330,6 +342,35 @@
     <div class="grid-cards" id="clientes-grid"></div>
   </section>
 
+  <!-- ===================== VIEW: MENSALIDADES (todos os clientes) ===================== -->
+  <section class="view" id="view-mensalidades">
+    <h1 class="page-title">Mensalidades</h1>
+    <p class="page-desc">Todos os meses de todos os clientes, organizados por cliente — marque como pago ou anexe o comprovante direto aqui.</p>
+
+    <div class="fechamento-toolbar">
+      <input type="month" id="mensalidades-geral-mes" onchange="renderMensalidadesGeral()">
+      <span class="row-link" id="mensalidades-geral-ver-todos" onclick="alternarMensalidadesVerTodos()">ver todos os meses</span>
+    </div>
+    <div class="stat-grid" id="mensalidades-geral-stats" style="margin-bottom:20px;"></div>
+
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <input type="text" id="mensalidades-geral-busca" placeholder="Buscar por cliente..." oninput="renderMensalidadesGeral()">
+        <select id="mensalidades-geral-status" onchange="renderMensalidadesGeral()">
+          <option value="">Todos os status</option>
+          <option value="pendente">Pendente</option>
+          <option value="atrasado">Atrasado</option>
+          <option value="pago">Pago</option>
+        </select>
+      </div>
+    </div>
+    <div id="mensalidades-geral-lista" style="margin-top:16px;"></div>
+    <div class="empty-state" id="mensalidades-geral-empty" style="display:none;">
+      <div class="big">Nada por aqui ainda</div>
+      <div>As mensalidades aparecem sozinhas conforme você cadastra clientes com data de início de contrato, ou gera recibos manualmente.</div>
+    </div>
+  </section>
+
   <!-- ===================== MODAL: CLIENTE (ficha completa) ===================== -->
   <div class="modal-bg" id="modal-cliente">
     <div class="modal">
@@ -370,6 +411,7 @@
               <input id="cliente-dia-vencimento" type="number" min="1" max="28" placeholder="Ex: 21">
             </div>
           </div>
+          <div class="field hint" style="margin-top:-10px;">Ao salvar (inclusive editando um cliente que já existia), o sistema cria sozinho as mensalidades que já venceram desde o início do contrato — sem duplicar as que já existem.</div>
           <div class="field">
             <label>Responsável pela conta na Kawlin</label>
             <input id="cliente-responsavel" placeholder="Ex: Willian">
@@ -1019,6 +1061,7 @@ document.querySelectorAll('nav.tabs button').forEach(btn=>{
     if(btn.dataset.view === 'historico') renderHistorico();
     if(btn.dataset.view === 'visao-geral') renderDashboard();
     if(btn.dataset.view === 'despesas') renderDespesas();
+    if(btn.dataset.view === 'mensalidades') renderMensalidadesGeral();
   });
 });
 
@@ -1159,7 +1202,52 @@ async function garantirPacotesPadrao(){
 }
 
 /* ---------------- Dashboard ---------------- */
+function renderPanoramaGeral(){
+  const grid = document.getElementById('dashboard-geral-stats');
+  if(!grid) return;
+  const totalRecebidoHistorico = recibos.filter(r=>statusEfetivo(r)==='pago').reduce((s,r)=>s+Number(r.total||0),0);
+  const totalPendenteHistorico = recibos.filter(r=>statusEfetivo(r)!=='pago').reduce((s,r)=>s+Number(r.total||0),0);
+  const totalDespesasPagas = despesas.filter(d=>d.status==='pago').reduce((s,d)=>s+Number(d.valor||0),0);
+  const lucroAcumulado = totalRecebidoHistorico - totalDespesasPagas;
+  const clientesAtivos = clientes.filter(c=>c.status==='ativo' || !c.status).length;
+  const clientesPausadosEncerrados = clientes.length - clientesAtivos;
+
+  grid.innerHTML = `
+    <div class="stat-card ok">
+      <div class="label">Total recebido (histórico)</div>
+      <div class="value">${fmtBRL(totalRecebidoHistorico)}</div>
+      <div class="foot">${recibos.filter(r=>statusEfetivo(r)==='pago').length} mensalidade(s) paga(s) desde o início</div>
+    </div>
+    <div class="stat-card warn">
+      <div class="label">Total a receber (todos os meses)</div>
+      <div class="value">${fmtBRL(totalPendenteHistorico)}</div>
+      <div class="foot">${recibos.filter(r=>statusEfetivo(r)!=='pago').length} mensalidade(s) em aberto</div>
+    </div>
+    <div class="stat-card danger">
+      <div class="label">Total investido em despesas</div>
+      <div class="value">${fmtBRL(totalDespesasPagas)}</div>
+      <div class="foot">${despesas.filter(d=>d.status==='pago').length} despesa(s) paga(s)</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Lucro acumulado</div>
+      <div class="value ${lucroAcumulado<0?'lucro-value negativo':'lucro-value positivo'}" style="font-size:26px;">${fmtBRL(lucroAcumulado)}</div>
+      <div class="foot">Recebido histórico − despesas pagas</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Clientes</div>
+      <div class="value">${clientes.length}</div>
+      <div class="foot">${clientesAtivos} ativo(s) · ${clientesPausadosEncerrados} pausado(s)/encerrado(s)</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Pacotes cadastrados</div>
+      <div class="value">${pacotes.length}</div>
+      <div class="foot">Disponíveis para novos clientes</div>
+    </div>
+  `;
+}
+
 function renderDashboard(){
+  renderPanoramaGeral();
   const grid = document.getElementById('stats-grid');
   const mesAtual = new Date().toISOString().slice(0,7);
   const faturadoMes = recibos.filter(r=>r.status==='pago' && r.data_pagamento && r.data_pagamento.slice(0,7)===mesAtual)
@@ -1393,6 +1481,119 @@ function novoReciboParaClienteAtual(){
   popularSelectClientes(clienteMensalidadesAtual.id);
   const sel = document.getElementById('recibo-cliente');
   sel.dispatchEvent(new Event('change'));
+}
+
+/* ---------------- Mensalidades — visão geral (todos os clientes, aba própria) ---------------- */
+let mensalidadesGeralVerTodos = false;
+
+function alternarMensalidadesVerTodos(){
+  mensalidadesGeralVerTodos = !mensalidadesGeralVerTodos;
+  document.getElementById('mensalidades-geral-ver-todos').textContent = mensalidadesGeralVerTodos ? 'ver só o mês selecionado' : 'ver todos os meses';
+  document.getElementById('mensalidades-geral-mes').style.opacity = mensalidadesGeralVerTodos ? '.45' : '1';
+  document.getElementById('mensalidades-geral-mes').disabled = mensalidadesGeralVerTodos;
+  renderMensalidadesGeral();
+}
+
+function renderMensalidadesGeral(){
+  const container = document.getElementById('mensalidades-geral-lista');
+  const empty = document.getElementById('mensalidades-geral-empty');
+  const busca = (document.getElementById('mensalidades-geral-busca').value||'').toLowerCase();
+  const filtroStatus = document.getElementById('mensalidades-geral-status').value;
+  const mesInput = document.getElementById('mensalidades-geral-mes');
+  if(!mesInput.value) mesInput.value = new Date().toISOString().slice(0,7);
+  const mesFiltro = mesInput.value;
+
+  const dentroDoMes = r => mensalidadesGeralVerTodos || (r.vencimento||r.periodo_fim||'').slice(0,7) === mesFiltro;
+
+  // ---- estatísticas do período selecionado (independem da busca/status na tabela) ----
+  const recibosDoMes = recibos.filter(dentroDoMes);
+  const totalDoMes = recibosDoMes.reduce((s,r)=>s+Number(r.total||0),0);
+  const recebidoDoMes = recibosDoMes.filter(r=>statusEfetivo(r)==='pago').reduce((s,r)=>s+Number(r.total||0),0);
+  const pendenteDoMes = recibosDoMes.filter(r=>statusEfetivo(r)!=='pago').reduce((s,r)=>s+Number(r.total||0),0);
+  const clientesComPendencia = new Set(recibosDoMes.filter(r=>statusEfetivo(r)!=='pago').map(r=>r.cliente_id)).size;
+
+  const statsEl = document.getElementById('mensalidades-geral-stats');
+  statsEl.innerHTML = `
+    <div class="stat-card">
+      <div class="label">Total ${mensalidadesGeralVerTodos ? '(todos os meses)' : 'do mês'}</div>
+      <div class="value">${fmtBRL(totalDoMes)}</div>
+      <div class="foot">${recibosDoMes.length} mensalidade(s)</div>
+    </div>
+    <div class="stat-card ok">
+      <div class="label">Recebido</div>
+      <div class="value">${fmtBRL(recebidoDoMes)}</div>
+      <div class="foot">${recibosDoMes.filter(r=>statusEfetivo(r)==='pago').length} paga(s)</div>
+    </div>
+    <div class="stat-card warn">
+      <div class="label">Pendente / atrasado</div>
+      <div class="value">${fmtBRL(pendenteDoMes)}</div>
+      <div class="foot">${recibosDoMes.filter(r=>statusEfetivo(r)!=='pago').length} em aberto</div>
+    </div>
+    <div class="stat-card ${clientesComPendencia?'danger':''}">
+      <div class="label">Clientes com pendência</div>
+      <div class="value">${clientesComPendencia}</div>
+      <div class="foot">de ${clientes.length} cliente(s) no total</div>
+    </div>
+  `;
+
+  // ---- lista agrupada por cliente (aplica busca, status e mês) ----
+  const clientesFiltrados = clientes.filter(c=>!busca || c.nome.toLowerCase().includes(busca));
+
+  container.innerHTML = '';
+  let algumaLinha = false;
+
+  clientesFiltrados.forEach(c=>{
+    let recibosCliente = recibos.filter(r=>r.cliente_id === c.id).filter(dentroDoMes);
+    if(filtroStatus) recibosCliente = recibosCliente.filter(r=>statusEfetivo(r)===filtroStatus);
+    if(!recibosCliente.length) return;
+    recibosCliente.sort((a,b)=> (b.vencimento||b.periodo_fim||'').localeCompare(a.vencimento||a.periodo_fim||''));
+    algumaLinha = true;
+
+    const pendentes = recibosCliente.filter(r=>statusEfetivo(r)!=='pago').length;
+    const grupo = document.createElement('div');
+    grupo.className = 'mensalidades-grupo';
+    grupo.innerHTML = `
+      <div class="mensalidades-grupo-header">
+        <span class="nome">${c.nome}</span>
+        <span class="contagem">${recibosCliente.length} mês(es)${pendentes ? ` · ${pendentes} pendente${pendentes>1?'s':''}` : ' · tudo pago'}</span>
+      </div>
+      <table>
+        <thead><tr><th>Mês</th><th>Vencimento</th><th>Total</th><th>Status</th><th>Comprovante</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    `;
+    const tbody = grupo.querySelector('tbody');
+    recibosCliente.forEach(r=>{
+      const st = statusEfetivo(r);
+      const temComprovante = !!r.comprovante_base64;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.mes_referencia}</td>
+        <td>${fmtDataBR(r.vencimento)}</td>
+        <td class="num">${fmtBRL(r.total)}</td>
+        <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
+        <td>${temComprovante ? '<span class="row-link" data-act="ver-comp">ver comprovante</span>' : '<span class="hint">sem comprovante</span>'}</td>
+        <td>
+          <div class="row-actions">
+            ${st!=='pago' ? '<span class="row-link" data-act="pago">marcar pago</span>' : ''}
+            <span class="row-link" data-act="abrir">abrir recibo</span>
+          </div>
+        </td>
+      `;
+      if(temComprovante){
+        tr.querySelector('[data-act="ver-comp"]').onclick = ()=>abrirAnexoEmNovaAba(r.comprovante_base64);
+      }
+      const btnPago = tr.querySelector('[data-act="pago"]');
+      if(btnPago){
+        btnPago.onclick = async ()=>{ await marcarComoPago(r); renderMensalidadesGeral(); };
+      }
+      tr.querySelector('[data-act="abrir"]').onclick = ()=>abrirRecibo(r);
+      tbody.appendChild(tr);
+    });
+    container.appendChild(grupo);
+  });
+
+  empty.style.display = algumaLinha ? 'none' : 'block';
 }
 
 let contasEstadoAtual = [];
@@ -1672,20 +1873,23 @@ async function salvarCliente(){
   };
   if(!payload.nome){ showToast('Informe o nome do cliente'); return; }
 
-  let error, clienteRecemCriado = null;
-  if(id){ ({error} = await supa.from('clientes').update(payload).eq('id', id)); }
-  else{
+  let error, clienteSalvo = null;
+  if(id){
+    const {data, error: errUpd} = await supa.from('clientes').update(payload).eq('id', id).select();
+    error = errUpd;
+    if(!error && data && data[0]) clienteSalvo = data[0];
+  }else{
     const {data, error: errIns} = await supa.from('clientes').insert(payload).select();
     error = errIns;
-    if(!error && data && data[0]) clienteRecemCriado = data[0];
+    if(!error && data && data[0]) clienteSalvo = data[0];
   }
   if(error){ showToast('Erro ao salvar'); console.error(error); return; }
   showToast('Cliente salvo');
   closeModal('modal-cliente');
   await carregarClientes();
   renderDashboard();
-  if(clienteRecemCriado){
-    await gerarMensalidadesRetroativas(clienteRecemCriado);
+  if(clienteSalvo){
+    await gerarMensalidadesRetroativas(clienteSalvo);
   }
 }
 
@@ -1711,15 +1915,18 @@ async function gerarMensalidadesRetroativas(c){
   const baselineTotal = contasAtivas.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
   const descContas = contasAtivas.length ? contasAtivas.map(x=>`${x.marketplace}${x.nome_loja? ' - '+x.nome_loja:''}`).join(', ') : null;
   const pacoteDesc = c.pacote_descricao || (descContas ? `Gestão e administração de ${descContas}` : 'Gestão e administração das contas no período');
+  const vencimentosExistentes = recibos.filter(r=>r.cliente_id === c.id).map(r=>r.vencimento);
 
   const novosPayloads = [];
   let k = 1;
-  while(true){
+  while(k <= 240){ // trava de segurança: no máximo 20 anos retroativos
     const venc = addMeses(inicio, k);
     if(venc > hoje) break;
+    const vencISO = venc.toISOString().slice(0,10);
+    if(vencimentosExistentes.includes(vencISO)){ k++; continue; }
     const periodoInicio = addMeses(inicio, k-1);
     const periodoFim = venc;
-    const desc = descontoInfo(c, venc.toISOString().slice(0,10));
+    const desc = descontoInfo(c, vencISO);
     const valorPacoteMes = desc ? Number(c.valor_pacote||0) * (1 - desc.percentual/100) : Number(c.valor_pacote||0);
 
     novosPayloads.push({
@@ -1728,8 +1935,8 @@ async function gerarMensalidadesRetroativas(c){
       mes_referencia: nomeMesPt(periodoFim),
       periodo_inicio: periodoInicio.toISOString().slice(0,10),
       periodo_fim: periodoFim.toISOString().slice(0,10),
-      emissao: venc.toISOString().slice(0,10),
-      vencimento: venc.toISOString().slice(0,10),
+      emissao: vencISO,
+      vencimento: vencISO,
       valor_pacote: valorPacoteMes,
       pacote_desc: pacoteDesc,
       volume_vendas: 0,
