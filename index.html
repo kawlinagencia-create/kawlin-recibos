@@ -1046,8 +1046,10 @@ function descontoInfo(c, dataRefISO){
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
   const ref = new Date((dataRefISO || hojeISO()) + 'T00:00:00');
   const mesesDecorridos = (ref.getFullYear()-inicio.getFullYear())*12 + (ref.getMonth()-inicio.getMonth());
-  if(mesesDecorridos < 0 || mesesDecorridos >= c.desconto_meses) return null;
-  return { percentual: c.desconto_percentual, mesAtual: mesesDecorridos+1, totalMeses: c.desconto_meses, acordo: c.desconto_acordo||'' };
+  // o primeiro pagamento só vence 1 mês após o início do contrato, então o mês do
+  // 1º pagamento já corresponde a mesesDecorridos=1 — a janela do desconto vai de 1 até desconto_meses (inclusive)
+  if(mesesDecorridos < 1 || mesesDecorridos > c.desconto_meses) return null;
+  return { percentual: c.desconto_percentual, mesAtual: mesesDecorridos, totalMeses: c.desconto_meses, acordo: c.desconto_acordo||'' };
 }
 
 /* ---------------- Navegação ---------------- */
@@ -1909,25 +1911,43 @@ function nomeMesPt(data){
 
 async function gerarMensalidadesRetroativas(c){
   if(!c.data_inicio_contrato) return;
+  const MARCADOR_AUTO = 'Gerado automaticamente como mês retroativo no cadastro do cliente — edite para informar o faturamento real do período.';
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
   const hoje = new Date();
   const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
   const baselineTotal = contasAtivas.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
   const descContas = contasAtivas.length ? contasAtivas.map(x=>`${x.marketplace}${x.nome_loja? ' - '+x.nome_loja:''}`).join(', ') : null;
   const pacoteDesc = c.pacote_descricao || (descContas ? `Gestão e administração de ${descContas}` : 'Gestão e administração das contas no período');
-  const vencimentosExistentes = recibos.filter(r=>r.cliente_id === c.id).map(r=>r.vencimento);
+  const recibosCliente = recibos.filter(r=>r.cliente_id === c.id);
+  const porVencimento = {};
+  recibosCliente.forEach(r=>{ if(r.vencimento) porVencimento[r.vencimento] = r; });
 
   const novosPayloads = [];
+  const atualizacoes = [];
   let k = 1;
   while(k <= 240){ // trava de segurança: no máximo 20 anos retroativos
     const venc = addMeses(inicio, k);
     if(venc > hoje) break;
     const vencISO = venc.toISOString().slice(0,10);
-    if(vencimentosExistentes.includes(vencISO)){ k++; continue; }
     const periodoInicio = addMeses(inicio, k-1);
     const periodoFim = venc;
     const desc = descontoInfo(c, vencISO);
     const valorPacoteMes = desc ? Number(c.valor_pacote||0) * (1 - desc.percentual/100) : Number(c.valor_pacote||0);
+    const existente = porVencimento[vencISO];
+
+    if(existente){
+      // só corrige mensalidades que ainda são placeholders automáticos intocados —
+      // nunca sobrescreve um recibo que já foi editado com faturamento real, comprovante ou status pago.
+      const éPlaceholderIntocado = existente.observacoes === MARCADOR_AUTO
+        && existente.status === 'pendente'
+        && !Number(existente.volume_vendas||0)
+        && !existente.comprovante_base64;
+      if(éPlaceholderIntocado && Number(existente.valor_pacote||0).toFixed(2) !== valorPacoteMes.toFixed(2)){
+        atualizacoes.push({id: existente.id, valor_pacote: valorPacoteMes, total: valorPacoteMes});
+      }
+      k++;
+      continue;
+    }
 
     novosPayloads.push({
       cliente_id: c.id,
@@ -1947,15 +1967,27 @@ async function gerarMensalidadesRetroativas(c){
       valor_comissao: 0,
       total: valorPacoteMes,
       status: 'pendente',
-      observacoes: 'Gerado automaticamente como mês retroativo no cadastro do cliente — edite para informar o faturamento real do período.',
+      observacoes: MARCADOR_AUTO,
     });
     k++;
   }
 
-  if(!novosPayloads.length) return;
-  const {error} = await supa.from('recibos').insert(novosPayloads);
-  if(error){ showToast('Cliente salvo, mas houve erro ao gerar os meses retroativos'); console.error(error); return; }
-  showToast(`${novosPayloads.length} mês(es) retroativo(s) gerado(s) automaticamente`);
+  let mudou = false;
+  if(novosPayloads.length){
+    const {error} = await supa.from('recibos').insert(novosPayloads);
+    if(error){ showToast('Cliente salvo, mas houve erro ao gerar os meses retroativos'); console.error(error); return; }
+    mudou = true;
+  }
+  for(const upd of atualizacoes){
+    const {error} = await supa.from('recibos').update({valor_pacote: upd.valor_pacote, total: upd.total}).eq('id', upd.id);
+    if(error){ console.error(error); continue; }
+    mudou = true;
+  }
+  if(!mudou) return;
+  const partes = [];
+  if(novosPayloads.length) partes.push(`${novosPayloads.length} mês(es) gerado(s)`);
+  if(atualizacoes.length) partes.push(`${atualizacoes.length} atualizado(s) com o novo valor`);
+  showToast(partes.join(' · '));
   await carregarRecibos();
   renderDashboard();
 }
