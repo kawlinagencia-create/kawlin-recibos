@@ -70,6 +70,10 @@
   .card .name{font-family:'Satoshi',sans-serif;font-weight:700;font-size:17px;margin:0 0 6px;}
   .card .meta{font-size:12.5px;color:var(--ink-soft);line-height:1.6;}
   .card .tag{display:inline-block;margin-top:10px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--terracotta-dark);background:#F7E9DA;padding:3px 9px;border-radius:6px;font-weight:600;}
+  .card-tags-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .card-tags-row .tag{margin-top:10px;}
+  .tag-mensalidades{background:var(--roxo-principal);color:#fff;cursor:pointer;transition:opacity .15s ease;}
+  .tag-mensalidades:hover{opacity:.85;}
   .badge{display:inline-block;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:6px;font-weight:700;white-space:nowrap;}
   .badge-ativo{background:var(--ok-bg);color:var(--ok);}
   .badge-pausado{background:var(--warn-bg);color:var(--warn);}
@@ -758,6 +762,31 @@
   </div>
 </div>
 
+<!-- ===================== MODAL: MENSALIDADES DO CLIENTE ===================== -->
+<div class="modal-bg" id="modal-mensalidades">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="title" id="mensalidades-modal-title">Mensalidades</div>
+      <button class="close-x" onclick="closeModal('modal-mensalidades')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="actions-row" style="margin-top:0;margin-bottom:16px;">
+        <button class="btn btn-primary btn-sm" onclick="novoReciboParaClienteAtual()">+ Novo recibo para este cliente</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Mês</th><th>Vencimento</th><th>Total</th><th>Status</th><th>Comprovante</th><th></th></tr></thead>
+          <tbody id="mensalidades-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="mensalidades-empty" style="display:none;padding:40px 20px;">
+          <div class="big">Nenhum recibo ainda</div>
+          <div>Gere o primeiro recibo deste cliente pelo botão acima.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== MODAL: VISUALIZAR RECIBO ===================== -->
 <div class="modal-bg" id="modal-recibo">
   <div class="modal">
@@ -1018,9 +1047,10 @@ function criarSupabaseFalso(){
     };
     function executar(){
       if(ops.type === 'insert'){
-        const row = Object.assign({id: uuid(), criado_em: new Date().toISOString()}, ops.payload);
-        db[table].push(row);
-        return {data: ops.wantSelect ? [row] : null, error:null};
+        const itens = Array.isArray(ops.payload) ? ops.payload : [ops.payload];
+        const linhas = itens.map(p=>Object.assign({id: uuid(), criado_em: new Date().toISOString()}, p));
+        db[table].push(...linhas);
+        return {data: ops.wantSelect ? linhas : null, error:null};
       }
       if(ops.type === 'update'){
         const atualizados = [];
@@ -1270,6 +1300,8 @@ function renderClientes(){
     const contas = contasAtivasCard.map(x=>x.marketplace).join(', ');
     const baselineTotal = contasAtivasCard.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
     const desc = descontoInfo(c);
+    const recibosCliente = recibos.filter(r=>r.cliente_id === c.id);
+    const pendentesCliente = recibosCliente.filter(r=>statusEfetivo(r)!=='pago').length;
     const card = document.createElement('div');
     card.className = 'card';
     card.onclick = ()=>abrirModalCliente(c);
@@ -1283,8 +1315,12 @@ function renderClientes(){
       ${baselineTotal>0 ? `<div class="meta">Faturamento inicial (baseline): <b>${fmtBRL(baselineTotal)}</b></div>` : ''}
       ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${desc.percentual}% · mês ${desc.mesAtual}/${desc.totalMeses}</span></div>` : ''}
       ${c.responsavel_agencia ? `<div class="meta">Responsável: ${c.responsavel_agencia}</div>` : ''}
-      <span class="tag">editar ficha</span>
+      <div class="card-tags-row">
+        <span class="tag">editar ficha</span>
+        <span class="tag tag-mensalidades">mensalidades${recibosCliente.length ? ` (${recibosCliente.length})` : ''}${pendentesCliente ? ` · ${pendentesCliente} pendente${pendentesCliente>1?'s':''}` : ''}</span>
+      </div>
     `;
+    card.querySelector('.tag-mensalidades').onclick = (e)=>{ e.stopPropagation(); abrirMensalidadesCliente(c); };
     grid.appendChild(card);
   });
   const addCard = document.createElement('button');
@@ -1292,6 +1328,71 @@ function renderClientes(){
   addCard.innerHTML = '<span class="plus">+</span><span>Novo cliente</span>';
   addCard.onclick = ()=>abrirModalCliente(null);
   grid.appendChild(addCard);
+}
+
+/* ---------------- Mensalidades por cliente (pagamentos mês a mês) ---------------- */
+let clienteMensalidadesAtual = null;
+
+function abrirMensalidadesCliente(c){
+  clienteMensalidadesAtual = c;
+  document.getElementById('mensalidades-modal-title').textContent = `Mensalidades — ${c.nome}`;
+  renderMensalidadesCliente();
+  openModal('modal-mensalidades');
+}
+
+function renderMensalidadesCliente(){
+  if(!clienteMensalidadesAtual) return;
+  const tbody = document.getElementById('mensalidades-tbody');
+  const empty = document.getElementById('mensalidades-empty');
+  const lista = recibos
+    .filter(r=>r.cliente_id === clienteMensalidadesAtual.id)
+    .sort((a,b)=> (b.periodo_fim||b.criado_em||'').localeCompare(a.periodo_fim||a.criado_em||''));
+  tbody.innerHTML = '';
+  if(!lista.length){ empty.style.display='block'; return; }
+  empty.style.display='none';
+  lista.forEach(r=>{
+    const st = statusEfetivo(r);
+    const temComprovante = !!r.comprovante_base64;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.mes_referencia}</td>
+      <td>${fmtDataBR(r.vencimento)}</td>
+      <td class="num">${fmtBRL(r.total)}</td>
+      <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
+      <td>${temComprovante ? '<span class="row-link" data-act="ver-comp">ver comprovante</span>' : '<span class="hint">sem comprovante</span>'}</td>
+      <td>
+        <div class="row-actions">
+          ${st!=='pago' ? '<span class="row-link" data-act="pago">marcar pago</span>' : ''}
+          <span class="row-link" data-act="abrir">abrir recibo</span>
+        </div>
+      </td>
+    `;
+    if(temComprovante){
+      tr.querySelector('[data-act="ver-comp"]').onclick = (e)=>{ e.stopPropagation(); abrirAnexoEmNovaAba(r.comprovante_base64); };
+    }
+    const btnPago = tr.querySelector('[data-act="pago"]');
+    if(btnPago){
+      btnPago.onclick = async (e)=>{
+        e.stopPropagation();
+        await marcarComoPago(r);
+        renderMensalidadesCliente();
+      };
+    }
+    tr.querySelector('[data-act="abrir"]').onclick = ()=>{ closeModal('modal-mensalidades'); abrirRecibo(r); };
+    tbody.appendChild(tr);
+  });
+}
+
+function novoReciboParaClienteAtual(){
+  if(!clienteMensalidadesAtual) return;
+  closeModal('modal-mensalidades');
+  document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.querySelector('nav.tabs button[data-view="novo-recibo"]').classList.add('active');
+  document.getElementById('view-novo-recibo').classList.add('active');
+  popularSelectClientes(clienteMensalidadesAtual.id);
+  const sel = document.getElementById('recibo-cliente');
+  sel.dispatchEvent(new Event('change'));
 }
 
 let contasEstadoAtual = [];
@@ -1571,13 +1672,84 @@ async function salvarCliente(){
   };
   if(!payload.nome){ showToast('Informe o nome do cliente'); return; }
 
-  let error;
+  let error, clienteRecemCriado = null;
   if(id){ ({error} = await supa.from('clientes').update(payload).eq('id', id)); }
-  else{ ({error} = await supa.from('clientes').insert(payload)); }
+  else{
+    const {data, error: errIns} = await supa.from('clientes').insert(payload).select();
+    error = errIns;
+    if(!error && data && data[0]) clienteRecemCriado = data[0];
+  }
   if(error){ showToast('Erro ao salvar'); console.error(error); return; }
   showToast('Cliente salvo');
   closeModal('modal-cliente');
   await carregarClientes();
+  renderDashboard();
+  if(clienteRecemCriado){
+    await gerarMensalidadesRetroativas(clienteRecemCriado);
+  }
+}
+
+function addMeses(data, n){
+  const d = new Date(data.getTime());
+  const diaOriginal = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  const ultimoDiaMesDestino = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  d.setDate(Math.min(diaOriginal, ultimoDiaMesDestino));
+  return d;
+}
+function nomeMesPt(data){
+  const nome = data.toLocaleDateString('pt-BR', {month:'long'});
+  return nome.charAt(0).toUpperCase() + nome.slice(1);
+}
+
+async function gerarMensalidadesRetroativas(c){
+  if(!c.data_inicio_contrato) return;
+  const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
+  const hoje = new Date();
+  const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
+  const baselineTotal = contasAtivas.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
+  const descContas = contasAtivas.length ? contasAtivas.map(x=>`${x.marketplace}${x.nome_loja? ' - '+x.nome_loja:''}`).join(', ') : null;
+  const pacoteDesc = c.pacote_descricao || (descContas ? `Gestão e administração de ${descContas}` : 'Gestão e administração das contas no período');
+
+  const novosPayloads = [];
+  let k = 1;
+  while(true){
+    const venc = addMeses(inicio, k);
+    if(venc > hoje) break;
+    const periodoInicio = addMeses(inicio, k-1);
+    const periodoFim = venc;
+    const desc = descontoInfo(c, venc.toISOString().slice(0,10));
+    const valorPacoteMes = desc ? Number(c.valor_pacote||0) * (1 - desc.percentual/100) : Number(c.valor_pacote||0);
+
+    novosPayloads.push({
+      cliente_id: c.id,
+      cliente_nome: c.nome,
+      mes_referencia: nomeMesPt(periodoFim),
+      periodo_inicio: periodoInicio.toISOString().slice(0,10),
+      periodo_fim: periodoFim.toISOString().slice(0,10),
+      emissao: venc.toISOString().slice(0,10),
+      vencimento: venc.toISOString().slice(0,10),
+      valor_pacote: valorPacoteMes,
+      pacote_desc: pacoteDesc,
+      volume_vendas: 0,
+      baseline_usado: baselineTotal,
+      crescimento: 0,
+      contas_detalhe: contasAtivas.map(x=>({marketplace:x.marketplace, nome_loja:x.nome_loja||'', baseline:Number(x.valor_inicial||0), faturamento:0, crescimento:0})),
+      comissao_percentual: c.comissao_percentual || 0,
+      valor_comissao: 0,
+      total: valorPacoteMes,
+      status: 'pendente',
+      observacoes: 'Gerado automaticamente como mês retroativo no cadastro do cliente — edite para informar o faturamento real do período.',
+    });
+    k++;
+  }
+
+  if(!novosPayloads.length) return;
+  const {error} = await supa.from('recibos').insert(novosPayloads);
+  if(error){ showToast('Cliente salvo, mas houve erro ao gerar os meses retroativos'); console.error(error); return; }
+  showToast(`${novosPayloads.length} mês(es) retroativo(s) gerado(s) automaticamente`);
+  await carregarRecibos();
   renderDashboard();
 }
 
