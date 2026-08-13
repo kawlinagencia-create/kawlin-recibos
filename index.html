@@ -483,10 +483,13 @@
               <label>Valor fixo de desconto (R$)</label>
               <input id="cliente-desconto-fixo" type="text" inputmode="decimal" placeholder="R$ 0,00" oninput="maskMoeda(this)">
             </div>
-            <div class="field">
+            <div class="field" id="cliente-desconto-meses-wrap">
               <label>Duração do desconto (meses)</label>
               <input id="cliente-desconto-meses" type="number" min="1" step="1" placeholder="Ex: 2">
             </div>
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="cliente-desconto-todos-meses" style="width:auto;margin-right:6px;" onchange="alternarDescontoTodosMeses()"> Aplicar em todos os meses (sem prazo — enquanto o cliente estiver ativo)</label>
           </div>
           <div class="field">
             <label>Acordo combinado</label>
@@ -887,6 +890,7 @@
      desconto_percentual numeric default 0,
      desconto_valor_fixo numeric default 0,
      desconto_meses int default 0,
+     desconto_todos_meses boolean default false,
      desconto_acordo text,
      contas jsonb default '[]',
      observacoes text,
@@ -976,6 +980,7 @@
    -- alter table clientes add column if not exists desconto_tipo text default 'percentual';
    -- alter table clientes add column if not exists desconto_percentual numeric default 0;
    -- alter table clientes add column if not exists desconto_valor_fixo numeric default 0;
+   -- alter table clientes add column if not exists desconto_todos_meses boolean default false;
    -- alter table clientes add column if not exists desconto_meses int default 0;
    -- alter table clientes add column if not exists desconto_acordo text;
    -- alter table clientes rename column contato to email; -- se existir a coluna antiga
@@ -1061,7 +1066,9 @@ function statusLabel(s){ return {pago:'Pago', pendente:'Pendente', atrasado:'Atr
 function statusClienteLabel(s){ return {ativo:'Ativo', pausado:'Pausado', encerrado:'Encerrado'}[s] || s; }
 
 function descontoInfo(c, dataRefISO){
-  if(!c || !c.data_inicio_contrato || !c.desconto_meses) return null;
+  if(!c || !c.data_inicio_contrato) return null;
+  const permanente = !!c.desconto_todos_meses;
+  if(!permanente && !c.desconto_meses) return null;
   const tipo = c.desconto_tipo || 'percentual';
   const temConfig = tipo === 'fixo' ? Number(c.desconto_valor_fixo||0) > 0 : Number(c.desconto_percentual||0) > 0;
   if(!temConfig) return null;
@@ -1069,14 +1076,17 @@ function descontoInfo(c, dataRefISO){
   const ref = new Date((dataRefISO || hojeISO()) + 'T00:00:00');
   const mesesDecorridos = (ref.getFullYear()-inicio.getFullYear())*12 + (ref.getMonth()-inicio.getMonth());
   // o primeiro pagamento só vence 1 mês após o início do contrato, então o mês do
-  // 1º pagamento já corresponde a mesesDecorridos=1 — a janela do desconto vai de 1 até desconto_meses (inclusive)
-  if(mesesDecorridos < 1 || mesesDecorridos > c.desconto_meses) return null;
+  // 1º pagamento já corresponde a mesesDecorridos=1 — a janela do desconto vai de 1 até desconto_meses (inclusive),
+  // ou indefinidamente se for um desconto permanente ("todos os meses")
+  if(mesesDecorridos < 1) return null;
+  if(!permanente && mesesDecorridos > c.desconto_meses) return null;
   return {
     tipo,
+    permanente,
     percentual: c.desconto_percentual,
     valorFixo: Number(c.desconto_valor_fixo||0),
     mesAtual: mesesDecorridos,
-    totalMeses: c.desconto_meses,
+    totalMeses: permanente ? null : c.desconto_meses,
     acordo: c.desconto_acordo||'',
   };
 }
@@ -1086,6 +1096,9 @@ function valorComDesconto(valorBase, desc){
 }
 function descricaoDesconto(desc){
   return desc.tipo === 'fixo' ? fmtBRL(desc.valorFixo) : `${desc.percentual}%`;
+}
+function janelaDesconto(desc){
+  return desc.permanente ? `mês ${desc.mesAtual} (todos os meses)` : `mês ${desc.mesAtual}/${desc.totalMeses}`;
 }
 
 /* ---------------- Navegação ---------------- */
@@ -1439,7 +1452,7 @@ function renderClientes(){
       <div class="meta">${contas || 'Sem contas cadastradas'}</div>
       <div class="meta">${c.pacote_nome ? `Pacote: <b>${c.pacote_nome}</b> · ` : 'Pacote: '}${fmtBRL(c.valor_pacote)} · Comissão: <b>${c.comissao_percentual||0}%</b></div>
       ${baselineTotal>0 ? `<div class="meta">Faturamento inicial (baseline): <b>${fmtBRL(baselineTotal)}</b></div>` : ''}
-      ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${descricaoDesconto(desc)} · mês ${desc.mesAtual}/${desc.totalMeses}</span></div>` : ''}
+      ${desc ? `<div class="meta"><span class="badge badge-warn" style="background:var(--warn-bg);color:var(--warn);">Desconto ${descricaoDesconto(desc)} · ${janelaDesconto(desc)}</span></div>` : ''}
       ${c.responsavel_agencia ? `<div class="meta">Responsável: ${c.responsavel_agencia}</div>` : ''}
       <div class="card-tags-row">
         <span class="tag">editar ficha</span>
@@ -1801,6 +1814,13 @@ function alternarTipoDescontoCliente(){
   document.getElementById('cliente-desconto-fixo-wrap').style.display = tipo === 'fixo' ? 'block' : 'none';
 }
 
+function alternarDescontoTodosMeses(){
+  const todosOsMeses = document.getElementById('cliente-desconto-todos-meses').checked;
+  const campoMeses = document.getElementById('cliente-desconto-meses');
+  document.getElementById('cliente-desconto-meses-wrap').style.opacity = todosOsMeses ? '.45' : '1';
+  campoMeses.disabled = todosOsMeses;
+}
+
 function abrirModalPacotes(){
   limparFormPacote();
   renderPacotesLista();
@@ -1892,8 +1912,10 @@ function abrirModalCliente(c){
   document.getElementById('cliente-desconto-pct').value = c ? (c.desconto_percentual||'') : '';
   setMoeda(document.getElementById('cliente-desconto-fixo'), c ? (c.desconto_valor_fixo||0) : 0);
   document.getElementById('cliente-desconto-meses').value = c ? (c.desconto_meses||'') : '';
+  document.getElementById('cliente-desconto-todos-meses').checked = c ? !!c.desconto_todos_meses : false;
   document.getElementById('cliente-desconto-acordo').value = c ? (c.desconto_acordo||'') : '';
   alternarTipoDescontoCliente();
+  alternarDescontoTodosMeses();
   document.getElementById('cliente-obs').value = c ? (c.observacoes||'') : '';
   contasEstadoAtual = c && Array.isArray(c.contas) ? JSON.parse(JSON.stringify(c.contas)) : [];
   renderContasContainer();
@@ -1928,6 +1950,7 @@ async function salvarCliente(){
     desconto_percentual: parseFloat(document.getElementById('cliente-desconto-pct').value) || 0,
     desconto_valor_fixo: parseMoeda(document.getElementById('cliente-desconto-fixo')),
     desconto_meses: parseInt(document.getElementById('cliente-desconto-meses').value) || 0,
+    desconto_todos_meses: document.getElementById('cliente-desconto-todos-meses').checked,
     desconto_acordo: document.getElementById('cliente-desconto-acordo').value.trim(),
     contas: contasEstadoAtual,
     observacoes: document.getElementById('cliente-obs').value.trim(),
@@ -1970,6 +1993,7 @@ function nomeMesPt(data){
 
 async function gerarMensalidadesRetroativas(c){
   if(!c.data_inicio_contrato) return;
+  const BUFFER_MESES_FUTUROS = 3;
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
   const hoje = new Date();
   const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
@@ -1983,12 +2007,24 @@ async function gerarMensalidadesRetroativas(c){
     if(chave && !porMesAno[chave]) porMesAno[chave] = r;
   });
 
+  // acha o k (mês de pagamento, 1 = primeiro mês) do último recibo já pago, pra saber até onde liberar o buffer futuro
+  let kUltimoPago = 0;
+  recibosCliente.forEach(r=>{
+    if(r.status !== 'pago' || !r.vencimento) return;
+    const venc = new Date(r.vencimento + 'T00:00:00');
+    const kR = (venc.getFullYear()-inicio.getFullYear())*12 + (venc.getMonth()-inicio.getMonth());
+    if(kR > kUltimoPago) kUltimoPago = kR;
+  });
+  const kAlvoBuffer = kUltimoPago + BUFFER_MESES_FUTUROS;
+
   const novosPayloads = [];
   const atualizacoes = [];
   let k = 1;
-  while(k <= 240){ // trava de segurança: no máximo 20 anos retroativos
+  while(k <= 240){ // trava de segurança: no máximo 20 anos
     const venc = addMeses(inicio, k);
-    if(venc > hoje) break;
+    const jaVenceu = venc <= hoje;
+    const dentroDoBuffer = k <= kAlvoBuffer;
+    if(!jaVenceu && !dentroDoBuffer) break; // nem venceu, nem está dentro do buffer de próximos meses liberados
     const vencISO = venc.toISOString().slice(0,10);
     const chaveMesAno = vencISO.slice(0,7);
     const periodoInicio = addMeses(inicio, k-1);
@@ -2126,7 +2162,7 @@ function aplicarDescontoInicialNoRecibo(){
     const valorFinal = valorComDesconto(valorBase, desc);
     setMoeda(document.getElementById('recibo-pacote'), valorFinal);
     hint.style.display = 'block';
-    hint.innerHTML = `<b>Desconto inicial aplicado:</b> ${descricaoDesconto(desc)} (mês ${desc.mesAtual} de ${desc.totalMeses}) — pacote de ${fmtBRL(valorBase)} reduzido para ${fmtBRL(valorFinal)}.${desc.acordo? ' Acordo: '+desc.acordo : ''}`;
+    hint.innerHTML = `<b>Desconto inicial aplicado:</b> ${descricaoDesconto(desc)} (${janelaDesconto(desc)}) — pacote de ${fmtBRL(valorBase)} reduzido para ${fmtBRL(valorFinal)}.${desc.acordo? ' Acordo: '+desc.acordo : ''}`;
   }else{
     setMoeda(document.getElementById('recibo-pacote'), valorBase);
     hint.style.display = 'none';
@@ -2301,6 +2337,10 @@ async function marcarComoPago(r){
   if(error){ showToast('Erro ao atualizar status'); console.error(error); return; }
   showToast('Marcado como pago');
   await carregarRecibos();
+  const cliente = clientes.find(c=>c.id === r.cliente_id);
+  if(cliente && cliente.data_inicio_contrato){
+    await gerarMensalidadesRetroativas(cliente);
+  }
   renderDashboard();
   renderHistorico();
   const atualizado = recibos.find(x=>x.id===r.id);
