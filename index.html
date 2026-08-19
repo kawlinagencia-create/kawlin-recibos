@@ -1986,6 +1986,15 @@ function addMeses(data, n){
   d.setDate(Math.min(diaOriginal, ultimoDiaMesDestino));
   return d;
 }
+function addMesesComDia(data, n, diaAlvo){
+  const d = new Date(data.getTime());
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  const dia = diaAlvo || data.getDate();
+  const ultimoDiaMesDestino = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  d.setDate(Math.min(dia, ultimoDiaMesDestino));
+  return d;
+}
 function nomeMesPt(data){
   const nome = data.toLocaleDateString('pt-BR', {month:'long'});
   return nome.charAt(0).toUpperCase() + nome.slice(1);
@@ -2000,6 +2009,7 @@ async function gerarMensalidadesRetroativas(c){
   if(!c.data_inicio_contrato) return;
   const BUFFER_MESES_FUTUROS = 3;
   const inicio = new Date(c.data_inicio_contrato + 'T00:00:00');
+  const diaVenc = c.dia_vencimento || null; // dia do mês configurado; se não tiver, usa o dia do início do contrato
   const hoje = new Date();
   const contasAtivas = (c.contas||[]).filter(x=>x.ativa!==false);
   const baselineTotal = contasAtivas.reduce((s,x)=>s+Number(x.valor_inicial||0),0);
@@ -2026,13 +2036,13 @@ async function gerarMensalidadesRetroativas(c){
   const atualizacoes = [];
   let k = 1;
   while(k <= 240){ // trava de segurança: no máximo 20 anos
-    const venc = addMeses(inicio, k);
+    const venc = addMesesComDia(inicio, k, diaVenc);
     const jaVenceu = venc <= hoje;
     const dentroDoBuffer = k <= kAlvoBuffer;
     if(!jaVenceu && !dentroDoBuffer) break; // nem venceu, nem está dentro do buffer de próximos meses liberados
     const vencISO = venc.toISOString().slice(0,10);
     const chaveMesAno = vencISO.slice(0,7);
-    const periodoInicio = addMeses(inicio, k-1);
+    const periodoInicio = addMesesComDia(inicio, k-1, diaVenc);
     const periodoFim = venc;
     const desc = descontoInfo(c, vencISO);
     const valorPacoteMes = desc ? valorComDesconto(Number(c.valor_pacote||0), desc) : Number(c.valor_pacote||0);
