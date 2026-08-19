@@ -1344,7 +1344,7 @@ function renderDashboard(){
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${r.cliente_nome}</td>
-        <td>${r.mes_referencia}</td>
+        <td>${mesLabelPorVencimento(r)}</td>
         <td>${fmtDataBR(r.vencimento)}</td>
         <td class="num">${fmtBRL(r.total)}</td>
         <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
@@ -1495,7 +1495,7 @@ function renderMensalidadesCliente(){
     const precisaPreencher = precisaPreencherFaturamento(r);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${r.mes_referencia}</td>
+      <td>${mesLabelPorVencimento(r)}</td>
       <td>${fmtDataBR(r.vencimento)}</td>
       <td class="num">${fmtBRL(r.total)}${precisaPreencher ? ' <span class="hint" style="color:var(--warn);">(sem faturamento)</span>' : ''}</td>
       <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
@@ -1626,7 +1626,7 @@ function renderMensalidadesGeral(){
       const precisaPreencher = precisaPreencherFaturamento(r);
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td>${r.mes_referencia}</td>
+        <td>${mesLabelPorVencimento(r)}</td>
         <td>${fmtDataBR(r.vencimento)}</td>
         <td class="num">${fmtBRL(r.total)}${precisaPreencher ? ' <span class="hint" style="color:var(--warn);">(sem faturamento)</span>' : ''}</td>
         <td><span class="badge badge-${st}">${statusLabel(st)}</span></td>
@@ -1989,6 +1989,11 @@ function addMeses(data, n){
 function nomeMesPt(data){
   const nome = data.toLocaleDateString('pt-BR', {month:'long'});
   return nome.charAt(0).toUpperCase() + nome.slice(1);
+}
+function mesLabelPorVencimento(r){
+  const dataRef = r.vencimento || r.periodo_fim;
+  if(!dataRef) return r.mes_referencia || '';
+  return nomeMesPt(new Date(dataRef + 'T00:00:00'));
 }
 
 async function gerarMensalidadesRetroativas(c){
@@ -2380,7 +2385,7 @@ function renderHistorico(){
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${r.cliente_nome}</td>
-      <td>${r.mes_referencia}</td>
+      <td>${mesLabelPorVencimento(r)}</td>
       <td>${fmtDataBR(r.periodo_inicio)} – ${fmtDataBR(r.periodo_fim)}</td>
       <td>${fmtDataBR(r.vencimento)}</td>
       <td class="num">${fmtBRL(r.total)}</td>
