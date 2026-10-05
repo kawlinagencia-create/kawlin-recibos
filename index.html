@@ -636,6 +636,7 @@
           <label>Faturamento inicial do cliente — baseline (R$)</label>
           <input id="recibo-baseline" type="text" inputmode="decimal" placeholder="R$ 0,00" oninput="maskMoeda(this)" value="R$ 0,00" readonly>
           <div class="hint">Soma do faturamento inicial das contas ativas. A comissão incide sobre o que exceder esse valor (o crescimento).</div>
+          <span class="row-link" onclick="puxarBaseDoCadastro()" style="display:inline-block;margin-top:8px;">↻ Puxar base inicial do cadastro</span>
         </div>
       </div>
 
@@ -2085,6 +2086,7 @@ async function gerarMensalidadesRetroativas(c){
   });
   const kAlvoBuffer = kUltimoPago + BUFFER_MESES_FUTUROS;
 
+  const contasDetalheBase = contasAtivas.map(x=>({marketplace:x.marketplace, nome_loja:x.nome_loja||'', baseline:Number(x.valor_inicial||0), faturamento:0, crescimento:0}));
   const novosPayloads = [];
   const atualizacoes = [];
   let k = 1;
@@ -2111,7 +2113,13 @@ async function gerarMensalidadesRetroativas(c){
         && !(Array.isArray(existente.comprovantes) && existente.comprovantes.length);
       const mudouValor = Number(existente.valor_pacote||0).toFixed(2) !== valorPacoteMes.toFixed(2);
       const mudouData = existente.vencimento !== vencISO;
-      if(éPlaceholderIntocado && (mudouValor || mudouData)){
+      // contas / base inicial / comissão mudaram no cadastro depois que o mês foi gerado?
+      const assinatura = lista => JSON.stringify((lista||[]).map(x=>[x.marketplace, x.nome_loja||'', Number(x.baseline||0)]));
+      const mudouContas = assinatura(existente.contas_detalhe) !== assinatura(contasDetalheBase);
+      const mudouBase = Number(existente.baseline_usado||0).toFixed(2) !== baselineTotal.toFixed(2);
+      const mudouComissao = Number(existente.comissao_percentual||0) !== Number(c.comissao_percentual||0);
+      const mudouDescricao = (existente.pacote_desc||'') !== pacoteDesc;
+      if(éPlaceholderIntocado && (mudouValor || mudouData || mudouContas || mudouBase || mudouComissao || mudouDescricao)){
         atualizacoes.push({
           id: existente.id,
           valor_pacote: valorPacoteMes,
@@ -2121,6 +2129,10 @@ async function gerarMensalidadesRetroativas(c){
           periodo_inicio: periodoInicio.toISOString().slice(0,10),
           periodo_fim: periodoFim.toISOString().slice(0,10),
           mes_referencia: nomeMesPt(periodoFim),
+          contas_detalhe: contasDetalheBase.map(x=>({...x})),
+          baseline_usado: baselineTotal,
+          comissao_percentual: c.comissao_percentual || 0,
+          pacote_desc: pacoteDesc,
         });
       }
       k++;
@@ -2140,7 +2152,7 @@ async function gerarMensalidadesRetroativas(c){
       volume_vendas: 0,
       baseline_usado: baselineTotal,
       crescimento: 0,
-      contas_detalhe: contasAtivas.map(x=>({marketplace:x.marketplace, nome_loja:x.nome_loja||'', baseline:Number(x.valor_inicial||0), faturamento:0, crescimento:0})),
+      contas_detalhe: contasDetalheBase.map(x=>({...x})),
       comissao_percentual: c.comissao_percentual || 0,
       valor_comissao: 0,
       total: valorPacoteMes,
@@ -2239,6 +2251,28 @@ function aplicarDescontoInicialNoRecibo(){
   recalcularComissao();
 }
 
+async function puxarBaseDoCadastro(){
+  const clienteId = document.getElementById('recibo-cliente').value;
+  if(!clienteId){ showToast('Selecione o cliente primeiro'); return; }
+  await carregarClientes(); // garante que está lendo o que está salvo no banco agora
+  const c = clientes.find(x=>x.id === clienteId);
+  if(!c){ showToast('Cliente não encontrado'); return; }
+  const ativas = (c.contas||[]).filter(x=>x.ativa!==false);
+  if(!ativas.length){ showToast(`"${c.nome}" não tem contas ativas cadastradas`); return; }
+  const chave = x => ((x.marketplace||'') + '|' + (x.nome_loja||'')).trim().toLowerCase();
+  const fatAtual = {};
+  contasDetalheAtual.forEach(cd=>{ fatAtual[chave(cd)] = Number(cd.faturamento||0); });
+  contasDetalheAtual = ativas.map(x=>({
+    marketplace: x.marketplace, nome_loja: x.nome_loja||'',
+    baseline: Number(x.valor_inicial||0), faturamento: fatAtual[chave(x)] || 0,
+  }));
+  renderContasDetalheForm();
+  recalcularComissao();
+  const total = contasDetalheAtual.reduce((s,cd)=>s+cd.baseline, 0);
+  if(total > 0) showToast(`Base inicial puxada de "${c.nome}": ${fmtBRL(total)} (${ativas.length} contas)`);
+  else showToast(`O cadastro de "${c.nome}" está sem faturamento inicial nas contas — preencha na ficha e salve`);
+}
+
 function renderContasDetalheForm(){
   const wrap = document.getElementById('recibo-contas-detalhe-wrap');
   const container = document.getElementById('recibo-contas-detalhe');
@@ -2328,6 +2362,21 @@ function editarRecibo(r){
   document.getElementById('recibo-comissao-pct').value = r.comissao_percentual || 0;
   document.getElementById('recibo-obs').value = r.observacoes || '';
   contasDetalheAtual = (r.contas_detalhe && r.contas_detalhe.length) ? JSON.parse(JSON.stringify(r.contas_detalhe)) : [];
+  const clienteDoRecibo = clientes.find(c=>c.id === r.cliente_id);
+  if(clienteDoRecibo){
+    const ativas = (clienteDoRecibo.contas||[]).filter(x=>x.ativa!==false);
+    if(precisaPreencherFaturamento(r)){
+      // mês ainda em branco: sempre parte das contas e da base inicial atuais do cadastro
+      contasDetalheAtual = ativas.map(x=>({marketplace:x.marketplace, nome_loja:x.nome_loja||'', baseline:Number(x.valor_inicial||0), faturamento:0}));
+    }else if(contasDetalheAtual.length){
+      // recibo já mexido: só completa bases que ficaram zeradas com o valor atual do cadastro
+      contasDetalheAtual.forEach(cd=>{
+        if(Number(cd.baseline||0)) return;
+        const m = ativas.find(x=>x.marketplace===cd.marketplace && (x.nome_loja||'')===(cd.nome_loja||''));
+        if(m && Number(m.valor_inicial||0) > 0) cd.baseline = Number(m.valor_inicial);
+      });
+    }
+  }
   renderContasDetalheForm();
   if(!contasDetalheAtual.length){
     setMoeda(document.getElementById('recibo-volume'), r.volume_vendas || 0);
