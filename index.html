@@ -2790,9 +2790,9 @@ function calcularQuebrasPdf(alturaTotalPx, alturaPaginaPx, pontosSeguros){
 }
 
 async function gerarPdfPaginado(target, nomeArquivo){
-  const canvas = await html2canvas(target, {scale:3, backgroundColor:'#ffffff'});
+  const canvas = await html2canvas(target, {scale:2, backgroundColor:'#ffffff'});
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({unit:'pt', format:'a4'});
+  const pdf = new jsPDF({unit:'pt', format:'a4', compress:true});
   const margem = 40;
   const largura = pdf.internal.pageSize.getWidth() - margem*2;
   const alturaUtil = pdf.internal.pageSize.getHeight() - margem*2;
@@ -2816,7 +2816,7 @@ async function gerarPdfPaginado(target, nomeArquivo){
     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, pedaco.width, altura);
     ctx.drawImage(canvas, 0, ini, canvas.width, altura, 0, 0, canvas.width, altura);
     if(idx > 0) pdf.addPage();
-    pdf.addImage(pedaco.toDataURL('image/png'), 'PNG', margem, margem, largura, altura*escala);
+    pdf.addImage(pedaco.toDataURL('image/jpeg', 0.8), 'JPEG', margem, margem, largura, altura*escala, undefined, 'FAST');
   });
   pdf.save(nomeArquivo + '.pdf');
 }
